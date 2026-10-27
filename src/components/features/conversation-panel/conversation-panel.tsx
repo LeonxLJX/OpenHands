@@ -1,4 +1,5 @@
 import React from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Tooltip } from "@heroui/react";
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
@@ -85,9 +86,10 @@ export function ConversationPanel({
   onClose,
   compact = false,
 }: ConversationPanelProps) {
+  const queryClient = useQueryClient();
   const { t } = useTranslation("openhands");
   const { conversationId: currentConversationId, navigate } = useNavigation();
-  const { backend: activeBackend } = useActiveBackend();
+  const { backend: activeBackend, orgId: activeOrgId } = useActiveBackend();
   const backendScopedPath = useBackendScopedPath();
   // Click-outside is only relevant in the legacy drawer mode where an
   // onClose handler is provided. When the panel is rendered inline (e.g.
@@ -837,10 +839,33 @@ export function ConversationPanel({
   };
 
   const handleConfirmDeleteAll = async () => {
-    // Delete against the unfiltered loaded set so archived (currently hidden)
-    // conversations are still removed from the server — matching the action's
-    // "delete all conversations" label and confirmation count.
-    const idsToDelete = allLoadedConversations.map((c) => c.id);
+    // "Delete all" must remove every conversation on the backend, not just
+    // the currently loaded first page. Walk the pagination cursor to fetch
+    // every page before computing the deletion set.
+    while (hasNextPage) {
+      await fetchNextPage();
+    }
+
+    // Read the fresh paginated data from the React Query cache directly,
+    // because the closure-captured `allLoadedConversations` / `data` above
+    // still reference the render that started this async function and
+    // therefore do not see pages fetched in the while loop.
+    const queryKey = [
+      "user",
+      "conversations",
+      "paginated",
+      20,
+      activeBackend.id,
+      activeOrgId,
+    ] as const;
+    const paginatedData = queryClient.getQueryData<{
+      pages: { items: { id: string }[] }[];
+    }>(queryKey);
+    const allConversationItems =
+      paginatedData?.pages.flatMap((page) => page.items) ?? [];
+    const uniqueConversations = uniqueById(allConversationItems);
+
+    const idsToDelete = uniqueConversations.map((c) => c.id);
     const results = await Promise.allSettled(
       idsToDelete.map((conversationId) =>
         deleteConversationAsync({ conversationId }),
