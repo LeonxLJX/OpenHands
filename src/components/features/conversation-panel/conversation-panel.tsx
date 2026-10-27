@@ -66,7 +66,10 @@ import {
   isEffectivelyArchivedConversation,
   isMissingSandboxStatus,
 } from "#/utils/conversation-archive-status";
-import type { SandboxStatus } from "#/api/conversation-service/agent-server-conversation-service.types";
+import type {
+  AppConversationPage,
+  SandboxStatus,
+} from "#/api/conversation-service/agent-server-conversation-service.types";
 
 interface ConversationPanelProps {
   onClose?: () => void;
@@ -842,14 +845,12 @@ export function ConversationPanel({
     // "Delete all" must remove every conversation on the backend, not just
     // the currently loaded first page. Walk the pagination cursor to fetch
     // every page before computing the deletion set.
-    while (hasNextPage) {
-      await fetchNextPage();
-    }
-
-    // Read the fresh paginated data from the React Query cache directly,
-    // because the closure-captured `allLoadedConversations` / `data` above
-    // still reference the render that started this async function and
-    // therefore do not see pages fetched in the while loop.
+    //
+    // We cannot rely on the closure-captured `hasNextPage`: `fetchNextPage()`
+    // triggers a re-render but the async function's scope never observes the
+    // new value, so a single-page click would only ever fetch once. Instead,
+    // re-read the latest page list from the React Query cache on every loop
+    // iteration and stop when the final page carries no `next_page_id`.
     const queryKey = [
       "user",
       "conversations",
@@ -858,6 +859,20 @@ export function ConversationPanel({
       activeBackend.id,
       activeOrgId,
     ] as const;
+
+    while (true) {
+      const currentData = queryClient.getQueryData<{
+        pages: AppConversationPage[];
+      }>(queryKey);
+      const lastPage = currentData?.pages?.[currentData.pages.length - 1];
+      if (!lastPage || !lastPage.next_page_id) break;
+      await fetchNextPage();
+    }
+
+    // Read the fully-fetched paginated data from the React Query cache. The
+    // closure-captured `allLoadedConversations` / `data` above still reference
+    // the render that started this async function and therefore do not see
+    // pages added by the loop above.
     const paginatedData = queryClient.getQueryData<{
       pages: { items: { id: string }[] }[];
     }>(queryKey);
